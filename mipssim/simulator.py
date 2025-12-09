@@ -35,8 +35,11 @@ class Simulator:
         self.ROB = components.ROB(maxlen=24)
         self.PC = -1 #Puisqu'on incrémente avant le premier lancement
         self.RS = OrderedDict()
-        self.lancements = 1
-        self.sanctions = 1
+
+        self.commit_multiple = 1
+        self.launch_multiple = 1
+        self.history_length = 5
+        self.pred_entries = 8
 
         self.debug = debug
 
@@ -86,39 +89,33 @@ class Simulator:
         # instruction dans un seul coup d'horloge.
 
         #On sanctionne l'instruction via le ROB ( Premier élément de celui-ci )
-        committed = 0
-        while committed < self.sanctions:
-            if not self.commit():
-                break
-            committed += 1
+        for i in range(int(self.commit_multiple)) :
+            self.commit()
 
         #Décrémentation du temps sur les unités fonctionnelles
         self.decrement_time()
 
-        issued = 0
+        for i in range(int(self.launch_multiple)) :
+            # Gestion des bulles ou stall ou fin programme
+            program_ended = (self.new_PC is None and self.PC + 1 == len(self.instructions))
 
-        while issued < self.lancements:
-            # Gestion des bulles et de la fin du programme
-            if self.stall == True or (self.new_PC == None and self.PC + 1 == len(self.instructions)):
-                break
-            elif self.new_PC == len(self.instructions):
-                #Le programme va terminer son exécution dès que le ROB sera vide.
+            if self.stall or program_ended:
+                print(f"Aucune instruction lancée (clock: {self.clock}).")
+                continue
+            # PC = len(instructions) signifie que le programme est terminé
+            if self.new_PC == len(self.instructions):
                 self.PC = self.new_PC
-                break
+                continue
+            # Mise à jour du PC normal
+            if self.new_PC is not None:
+                # Brancement 
+                self.PC = self.new_PC
             else:
-                #Avancement du Issue/Program Counter (PC)
-                if self.new_PC != None: #Si branchement
-                    self.PC = self.new_PC
-                else:
-                    self.PC = self.PC + 1
-                self.new_PC = None
+                # Incrémentation normale
+                self.PC += 1
 
-                old_PC = self.PC
-                self.issue()
-                issued += 1
-
-        if issued == 0:
-            print('Aucune instruction lancée (clock: %i).' % self.clock)
+            self.new_PC = None
+            self.issue()
 
         #Mise à jour de la trace
         for t in self.trace:
@@ -670,7 +667,7 @@ def create_functional_units(xml_data, name, default_n, default_latency, addition
     if 'class' in fu_params:
         cl = fu_params.pop('class')
     elif name == 'Branch':
-        cl = 'BranchUnit'
+        cl = 'BranchUnitHybride'
     else:
         cl = 'FuncUnit'
 

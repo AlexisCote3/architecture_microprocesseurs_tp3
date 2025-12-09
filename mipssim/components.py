@@ -223,10 +223,85 @@ def check_valid_register(func):
     def function_handling(*args, **kwargs):
         temp = args[1]
         if temp[0] not in ['R', 'F'] or int(temp[1:]) not in range(0, NUM_REGISTERS):
-            raise SimulationException('Accès à un registre non valide: %s.' % args[1])
+            raise Exception('Accès à un registre non valide: %s.' % args[1])
         else:
             return func(*args, **kwargs)
     return function_handling
+
+
+class BranchUnitBasePred(FuncUnit):
+    '''
+    Unité fonctionnelle de branchement. Ajoute une fonction spéciale `get_prediction` qui
+     retourne la prédiction d'un branchement.
+
+    Pour votre projet, vous pourrez créer une nouvelle unité fonctionnelle de branchement et
+     l'utiliser à la place de celle-ci.
+    '''
+    def __init__(self, name, latency, forward_branch, backward_branch, **kwargs):
+        #Important: appel au constructeur de la classe de base.
+        super(BranchUnitBasePred, self).__init__(name, latency, **kwargs)
+
+        self.forward_branch = forward_branch
+        self.backward_branch = backward_branch
+        self.correctly_predicted = 0
+        self.wrongly_predicted = 0
+
+    def get_prediction(self, PC, dest):
+        '''
+        Prédiction en fonction de la ligne courante, de la destination du branchement
+         et de quelconque information préservée par le prédicteur.
+        '''
+
+        # Vrai si le branch va vers l'avant
+        is_forward_branch = dest > PC
+
+        if (self.forward_branch == 'taken' and is_forward_branch)\
+          or (self.backward_branch == 'taken' and not is_forward_branch):
+            #Prédiction d'un branchement pris.
+            prediction = True
+        else:
+            #Prédiction d'un branchement non pris.
+            prediction = False
+
+        #Stock la prédiction pour le moment ou il faudra ajuster le modèle.
+        self.prediction = prediction
+
+        return prediction
+
+    def update(self, branch_taken):
+        """
+        Met à jour le modèle interne de prédiction en fonction
+         du résultat du branchement, prédiction statique de base.
+        """
+
+        # Statistiques de branchement
+        if branch_taken == self.prediction:
+            self.correctly_predicted += 1
+        else:
+            self.wrongly_predicted += 1
+
+        # Affichage de la précision mise à jour
+        total = self.correctly_predicted + self.wrongly_predicted
+        accuracy = (self.correctly_predicted / total) * 100 if total > 0 else 0.0
+
+        print(
+            f"Correct={self.correctly_predicted}  Wrong={self.wrongly_predicted}  "
+            f"Accuracy={accuracy:.2f}%"
+        )
+
+
+
+    def check_valid_register(func):
+        '''
+        Décorateur s'assurant que les registres accédés sont valides.
+        '''
+        def function_handling(*args, **kwargs):
+            temp = args[1]
+            if temp[0] not in ['R', 'F'] or int(temp[1:]) not in range(0, NUM_REGISTERS):
+                raise Exception('Accès à un registre non valide: %s.' % args[1])
+            else:
+                return func(*args, **kwargs)
+        return function_handling
 
 
 class Registers(OrderedDict):
@@ -323,3 +398,131 @@ d'interpréter incorrectement une variable, ce qui produirait des bugs plus diff
             raise Exception('Indexation invalide de la mémoire (%i), doit être un multiple de 8' %
               index)
         self.data[i] = value
+
+
+class BranchUnitHybride(FuncUnit):
+    '''
+    Unité fonctionnelle de branchement. Ajoute une fonction spéciale `get_prediction` qui
+     retourne la prédiction d'un branchement.
+
+    Pour votre projet, vous pourrez créer une nouvelle unité fonctionnelle de branchement et
+     l'utiliser à la place de celle-ci.
+    '''
+    def __init__(self, name, latency, pred_entries, history_length, **kwargs):
+        #Important: appel au constructeur de la classe de base.
+        super(BranchUnitHybride, self).__init__(name, latency, **kwargs)
+
+        self.pred_entries = int(pred_entries)
+        self.history_length = int(history_length)
+        self.PC = 0
+
+        self.correctly_predicted = 0
+        self.wrongly_predicted = 0
+
+        self.histories = [0] * self.history_length
+        self.preds = [[0] * self.pred_entries for _ in range(self.history_length)]
+        self.tags  = [[0] * self.pred_entries for _ in range(self.history_length)]
+        self.selected_pred = 0
+
+
+
+    def get_prediction(self, PC, dest):
+        '''
+        Prédiction en fonction de la ligne courante, de la destination du branchement
+         et de quelconque information préservée par le prédicteur.
+        '''
+        self.PC = PC
+
+        # Calcule des indices pour chaque prédicteur
+        indices = [(PC ^ self.histories[i]) % self.pred_entries
+                for i in range(self.history_length)]
+
+        predictions = []
+        selected_pred = 0
+
+        # Obtention des prédictions de chaque prédicteur
+        for i in range(self.history_length):
+            idx = indices[i]
+
+            # Sélection du prédicteur ayant le tag correspondant
+            if i > 0:
+                if self.tags[i][idx] == (PC ^ self.histories[i]):
+                    selected_pred = i
+
+            # Conversion du compteur saturant en prédiction booléenne
+            predictions.append(self.preds[i][idx] > 1)
+
+        # Prédiction finale choisie
+        prediction = predictions[selected_pred]
+
+        # Sauvegarde de la sélection pour la phase de mise à jour
+        self.selected_pred = selected_pred
+        self.prediction = prediction
+
+        return prediction
+
+
+    def update(self, branch_taken):
+        '''
+        Met à jour le modèle interne de prédiction (si applicable) en fonction
+         du résultat du branchement.
+        '''
+        # Statistiques de branchement
+        if branch_taken == self.prediction:
+            self.correctly_predicted += 1
+        else:
+            self.wrongly_predicted += 1
+
+        # Recalcul des indices utilisés lors de la prédiction
+        indices = [(self.PC ^ self.histories[i]) % self.pred_entries
+                for i in range(self.history_length)]
+
+        i = self.selected_pred
+        idx = indices[i]
+        counter = self.preds[i][idx]
+
+        # Mise à jour du compteur saturant pour le prédicteur sélectionné
+        if branch_taken:
+            # Renforcement de la prédiction prise
+            if counter == 3:
+                counter = 7
+            elif counter < 7:
+                counter += 1
+        else:
+            # Correction de la prédiction non prise
+            if counter == 4:
+                counter = 0
+            elif counter > 0:
+                counter -= 1
+
+        self.preds[i][idx] = counter
+
+        # Mise à jour des historiques et des tags
+        for h in range(1, self.history_length):
+            # Décalage du nouveau bit et conservation de seulement h bits d'historique
+            self.histories[h] = ((self.histories[h] << 1) | branch_taken) & ((1 << h) - 1)
+
+            # Mise à jour du tag pour l'entrée utilisée
+            self.tags[h][indices[h]] = (self.PC ^ self.histories[h])
+
+        # Affichage de la précision mise à jour
+        total = self.correctly_predicted + self.wrongly_predicted
+        accuracy = (self.correctly_predicted / total * 100) if total > 0 else 0
+
+        print("Correctly predicted branches :", self.correctly_predicted)
+        print("Wrongly predicted branches : ", self.wrongly_predicted)
+        print("Percentage of correct predictions : ", accuracy)
+
+
+    def check_valid_register(func):
+        '''
+        Décorateur s'assurant que les registres accédés sont valides.
+        '''
+        def function_handling(*args, **kwargs):
+            temp = args[1]
+            if temp[0] not in ['R', 'F'] or int(temp[1:]) not in range(0, NUM_REGISTERS):
+                raise Exception('Accès à un registre non valide: %s.' % args[1])
+            else:
+                return func(*args, **kwargs)
+        return function_handling
+

@@ -51,13 +51,13 @@ if py3k:
 else:
     itermap = itertools.imap
     iterzip = itertools.izip
-    uni_chr = unichr
-    from HTMLParser import HTMLParser
+    uni_chr = chr
+    from html.parser import HTMLParser
 
 if py3k and sys.version_info[1] >= 2:
     from html import escape
 else:
-    from cgi import escape
+    from html import escape
 
 # hrule styles
 FRAME = 0
